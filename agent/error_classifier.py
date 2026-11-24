@@ -169,6 +169,15 @@ _OVERLOADED_PATTERNS = (
     # CommandCode's 429 body for an unavailable upstream model — the key is healthy (#117111).
     "upstream model provider is temporarily unavailable. please try again in a moment.",
     "at capacity", "over capacity",
+    # Z.AI / Zhipu answer an overloaded model with HTTP 429 + code 1305 and a CHINESE
+    # message ("该模型当前访问量过大，请您稍后再试" = "this model's current access volume is
+    # too large, please try again later"). The prose above never matches that body, so the
+    # 429 fell through to rate_limit: the pool rotated keys and benched them for an hour
+    # (the quota is per-ACCOUNT, so rotating cannot help) and the turn failed over to the
+    # fallback model. The account is fine — the model is busy — so treat it as overload.
+    # The English 1305 body ("service may be temporarily overloaded") was already covered
+    # by the pattern list above; only the localized body was missing.
+    "该模型当前访问量过大",
 )
 
 # Usage-limit patterns that need disambiguation (billing OR rate_limit), and

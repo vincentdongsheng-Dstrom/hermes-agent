@@ -140,15 +140,26 @@ def _error_text(error: Any) -> str:
     return " ".join(str(part) for part in parts if part is not None).lower()
 
 
+# Z.AI Coding Plan overloads a MODEL, not the account: the quota behind a 429 + code
+# 1305 is per-model (GLM-5.4 tolerates 6 concurrent requests while GLM-5.4 on a
+# fresh model slot is capped at ~2), so the retry must stay on the same key and back
+# off, never rotate. Both the international (api.z.ai) and China (open.bigmodel.cn)
+# coding endpoints serve this shape, and every GLM-5.x model can be the overloaded
+# one — the earlier "glm-5.2" pin only matched the model that first showed it.
+_ZAI_CODING_ENDPOINT_MARKERS = ("api.z.ai/api/coding/paas/v4", "open.bigmodel.cn/api/coding/paas/v4")
+
+
 def is_zai_coding_overload_error(*, base_url: str | None, model: str | None, error: Any) -> bool:
     """True only for the narrow Z.AI Coding Plan overload shape (429 + code
     1305 / "temporarily overloaded"), so ordinary quota 429s still fail fast."""
     text = _error_text(error)
+    url = (base_url or "").lower()
+    model_lower = (model or "").lower()
     return (
         getattr(error, "status_code", None) == 429
-        and "api.z.ai/api/coding/paas/v4" in (base_url or "").lower()
-        and "glm-5.2" in (model or "").lower()
-        and ("1305" in text or "temporarily overloaded" in text)
+        and any(marker in url for marker in _ZAI_CODING_ENDPOINT_MARKERS)
+        and "glm-" in model_lower
+        and ("1305" in text or "temporarily overloaded" in text or "该模型当前访问量过大" in text)
     )
 
 

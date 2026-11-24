@@ -126,6 +126,86 @@ def test_zai_overload_ceiling_makes_long_tier_reachable(monkeypatch):
     assert long_waits == list(_ZAI_CODING_OVERLOAD_LONG_BACKOFF)
 
 
+def _zai_cn_overload_error():
+    """The localized body Z.AI's China coding endpoint returns for a busy model."""
+    return SimpleNamespace(
+        status_code=429,
+        body={
+            "error": {
+                "code": "1305",
+                "message": "该模型当前访问量过大，请您稍后再试",
+            }
+        },
+    )
+
+
+def test_zai_cn_overload_is_recognized_for_glm_5_4():
+    """A GLM-5.x 1305 on the China coding endpoint is a model overload.
+
+    The matcher used to name one model id ("glm-5.2") and one host
+    ("api.z.ai"), so a newer model on open.bigmodel.cn fell through to
+    generic rate_limit: the pool rotated keys and benched them for an hour
+    (the quota is per-MODEL, so rotating cannot help) and the turn failed
+    over to the fallback model instead of backing off on the same key.
+    """
+    from agent.retry_utils import is_zai_coding_overload_error
+
+    err = _zai_cn_overload_error()
+    assert is_zai_coding_overload_error(
+        base_url="https://open.bigmodel.cn/api/coding/paas/v4",
+        model="glm-5.4",
+        error=err,
+    )
+    # The original shape must keep matching.
+    assert is_zai_coding_overload_error(
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        model="glm-5.2",
+        error=_zai_overload_error(),
+    )
+
+
+def test_zai_overload_matcher_stays_narrow():
+    """An ordinary quota 429 (no 1305, wrong endpoint) is still not an overload."""
+    from agent.retry_utils import is_zai_coding_overload_error
+
+    plain = SimpleNamespace(
+        status_code=429,
+        body={"error": {"code": "1113", "message": "Insufficient balance"}},
+    )
+    assert not is_zai_coding_overload_error(
+        base_url="https://open.bigmodel.cn/api/coding/paas/v4", model="glm-5.4", error=plain,
+    )
+    # Right code, wrong endpoint (the standard pay-as-you-go API).
+    assert not is_zai_coding_overload_error(
+        base_url="https://api.z.ai/api/paas/v4", model="glm-5.4", error=_zai_cn_overload_error(),
+    )
+    # Right endpoint, unrelated model family.
+    assert not is_zai_coding_overload_error(
+        base_url="https://open.bigmodel.cn/api/coding/paas/v4", model="MiniMax-M3",
+        error=_zai_cn_overload_error(),
+    )
+
+
+def test_cn_overload_uses_the_long_backoff_schedule():
+    """The widened matcher must also reach the long tier, not just the short retries."""
+    from agent.retry_utils import adaptive_rate_limit_backoff, zai_coding_overload_retry_ceiling
+
+    err = _zai_cn_overload_error()
+    ceiling = zai_coding_overload_retry_ceiling()
+    long_waits = []
+    for attempt in range(1, ceiling):
+        _wait, policy = adaptive_rate_limit_backoff(
+            attempt,
+            base_url="https://open.bigmodel.cn/api/coding/paas/v4",
+            model="glm-5.4",
+            error=err,
+            default_wait=1.0,
+        )
+        if policy == "zai_coding_overload_long":
+            long_waits.append(_wait)
+    assert long_waits, "long-backoff tier never reached for the China endpoint"
+
+
 # ---------------------------------------------------------------------------
 # parse_retry_after_seconds — shared Retry-After parser
 # ---------------------------------------------------------------------------
